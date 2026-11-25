@@ -1,0 +1,67 @@
+import { useState } from 'react';
+import {
+  canClose, type Errors, type IncidentDetail, INCIDENT_TRANSITIONS, incidentNeedsNote, type IncidentStatus, isIncidentFinal, permit,
+} from '@aravalli/shared';
+import { api, fieldErrors } from '../../api/client';
+import { useSession, useToast } from '../../app/providers';
+import { Field, Select, Textarea } from '../ui/fields';
+import { Button } from '../ui/Button';
+
+export function UpdateComposer({ incident, onSaved }: { incident: IncidentDetail; onSaved: (updated: IncidentDetail) => void }) {
+  const { actor } = useSession();
+  const toast = useToast();
+  const [text, setText] = useState('');
+  const [to, setTo] = useState<IncidentStatus | ''>('');
+  const [errors, setErrors] = useState<Errors>({});
+  const [saving, setSaving] = useState(false);
+
+  const final = isIncidentFinal(incident.status);
+  // The server enforces all of this again; here it only explains why a control is disabled.
+  const p = final
+    ? { allowed: false, reason: 'Closed incidents are final.' }
+    : permit(actor, 'incident.update', { reported_by: incident.reported_by, assigned_to: incident.assigned_to } as never);
+  const next = INCIDENT_TRANSITIONS[incident.status].filter((s) => s !== 'Closed' || canClose(actor).allowed);
+  const needsNote = to !== '' && incidentNeedsNote(to);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      onSaved(await api.addIncidentUpdate(incident.incident_id, text, to || null));
+      setText(''); setTo(''); setErrors({});
+      toast.push('Update saved');
+    } catch (err) {
+      setErrors(fieldErrors(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} noValidate className="space-y-1">
+      {errors._form && <p role="alert" className="text-[14px] font-medium">{errors._form}</p>}
+      <Field label={needsNote ? 'Resolution note' : 'Note'} required error={errors.update_text}>
+        {(f) => <Textarea {...f} rows={3} disabled={!p.allowed} value={text} onChange={(e) => setText(e.target.value)} placeholder="What happened, what was done, what is next" />}
+      </Field>
+      <Field
+        label="Change status"
+        error={errors.status_to}
+        hint={next.length ? undefined : final ? 'Closed incidents are final.' : 'No status changes available to you.'}
+      >
+        {(f) => (
+          <Select
+            {...f}
+            disabled={!p.allowed || next.length === 0}
+            value={to}
+            onChange={(e) => setTo(e.target.value as IncidentStatus | '')}
+            placeholder={`No change (stay ${incident.status})`}
+            options={next.map((s) => ({ value: s, label: s === 'Investigating' && incident.status === 'Resolved' ? 'Investigating (reopen)' : s }))}
+          />
+        )}
+      </Field>
+      <div className="flex justify-end pt-2">
+        <Button type="submit" variant="primary" disabled={saving} disabledReason={p.allowed ? undefined : p.reason}>{saving ? 'Posting…' : 'Post update'}</Button>
+      </div>
+    </form>
+  );
+}
